@@ -1,119 +1,126 @@
 import { URL } from "node:url";
-import { JSDOM } from "jsdom";
-import { ExtractedPageData } from "./types";
+import pLimit, { LimitFunction } from "p-limit";
+import { getURLsFromHTML, normalizeUrl } from "./utils";
 
-export function normalizeUrl(url: string) {
-  let urlObj = new URL(url);
-  let hostname = urlObj.hostname;
+/*----------------------------------------------------- */
+/* --------- ConcurrentCrawler class ---------------- */
+/*----------------------------------------------------- */
+export class ConcurrentCrawler {
+  private baseUrl: string;
+  private pages: Record<string, number>;
+  private limit: LimitFunction;
 
-  let pathname = urlObj.pathname;
-  if (pathname.endsWith("/")) {
-    pathname = pathname.slice(0, -1);
+  constructor(baseUrl: string, maxConcurrency: number = 5) {
+    this.baseUrl = baseUrl;
+    this.pages = {};
+    this.limit = pLimit(maxConcurrency);
   }
 
-  return hostname + pathname;
-}
+  private addPageVisit(normalizedURL: string): boolean {
+    if (Object.hasOwn(this.pages, normalizedURL)) {
+      return true;
+    }
 
-export function getHeadingFromHTML(html: string): string {
-  const dom = new JSDOM(html);
-  const h1 = dom.window.document.querySelector("h1")?.textContent.trim();
-  const h2 = dom.window.document.querySelector("h2")?.textContent.trim();
-  if (h1) {
-    return h1;
-  } else if (h2) {
-    return h2;
-  } else {
-    return "";
-  }
-}
-
-export function getFirstParagraphFromHTML(html: string): string {
-  try {
-    const dom = new JSDOM(html);
-    const doc = dom.window.document;
-    const main = doc.querySelector("main");
-    const p = main?.querySelector("p") ?? doc.querySelector("p");
-    return (p?.textContent ?? "").trim();
-  } catch (err) {
-    return "";
-  }
-}
-
-export function getURLsFromHTML(html: string, baseURL: string): string[] {
-  let urls: string[] = [];
-  try {
-    const dom = new JSDOM(html);
-    const anchorArr = [...dom.window.document.querySelectorAll("a")];
-    const urlArr = anchorArr
-      .map((a) => a.getAttribute("href"))
-      .map((url) => {
-        const u = new URL(url!, baseURL);
-        return u.href;
-      });
-    urls = [...new Set(urlArr)];
-  } catch (err) {
-    console.error("failed to parse HTML:", err);
+    this.pages[normalizedURL] = 1;
+    return false;
   }
 
-  return urls;
-}
+  private async getHTML(currentURL: string): Promise<string> {
+    return await this.limit(async () => {
+      let res;
+      try {
+        res = await fetch(currentURL, {
+          headers: { "User-agent": "TsCrawler/1.0" },
+        });
+      } catch (err) {
+        throw new Error(`Got Network error: ${(err as Error).message}`);
+      }
 
-export function getImagesFromHTML(html: string, baseURL: string): string[] {
-  let images: string[] = [];
-  try {
-    const dom = new JSDOM(html);
-    const imgTags = [...dom.window.document.querySelectorAll("img")];
-    const srcArr = imgTags
-      .map((h) => h.getAttribute("src"))
-      .map((url) => {
-        const u = new URL(url!, baseURL);
-        return u.href;
-      });
+      if (!res.ok) {
+        console.log(`Got HTTP error: ${res.status} ${res.statusText}`);
+        return "";
+      }
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType?.includes("text/html")) {
+        console.log(`Got non-HTML response: ${contentType}`);
+        return "";
+      }
 
-    images = [...new Set(srcArr)];
-  } catch (err) {
-    console.error("failed to parse HTML:", err);
-  }
-
-  return images;
-}
-
-export function extractPageData(
-  html: string,
-  pageURL: string,
-): ExtractedPageData {
-  return {
-    url: pageURL,
-    heading: getHeadingFromHTML(html),
-    firstParagraph: getFirstParagraphFromHTML(html),
-    outgoingLinks: getURLsFromHTML(html, pageURL),
-    imageUrls: getImagesFromHTML(html, pageURL),
-  };
-}
-
-export async function getHTML(url: string) {
-  console.log(url);
-  let res;
-  try {
-    res = await fetch(url, {
-      headers: { "User-agent": "TsCrawler/1.0" },
+      return res.text();
     });
-  } catch (err) {
-    throw new Error(`Got Network error: ${(err as Error).message}`);
   }
 
-  if (!res.ok) {
-    console.log(`Got HTTP error: ${res.status} ${res.statusText}`);
-    return "";
-  }
-  const contentType = res.headers.get("content-type");
-  if (!contentType || !contentType?.includes("text/html")) {
-    console.log(`Got non-HTML response: ${contentType}`);
-    return "";
+  private async crawlPage(currentURL: string): Promise<void> {
+    let current = new URL(currentURL);
+    const base = new URL(this.baseUrl);
+
+    if (base.origin !== current.origin) return;
+
+    const normalizedURL = normalizeUrl(current.href);
+    const isVisited = this.addPageVisit(normalizedURL);
+    if (isVisited) return;
+
+    let html = "";
+    try {
+      html = await this.getHTML(currentURL);
+      console.log(html);
+    } catch (e) {
+      console.log(`${(e as Error).message}`);
+      return;
+    }
+    const allUrls = getURLsFromHTML(html, this.baseUrl);
+    const input: Promise<void>[] = [];
+
+    for (let nextUrl of allUrls) {
+      input.push(this.crawlPage(nextUrl));
+    }
+
+    await Promise.all(input);
   }
 
-  return res.text();
+  async crawl() {
+    await this.crawlPage(this.baseUrl);
+    return this.pages;
+  }
 }
+
+/*----------------------------------------------------- */
+/* --------- Crawl Site Async Function ---------------- */
+/*----------------------------------------------------- */
+
+export async function crawlSiteAsync(baseUrl: string) {
+  const siteCrawler = new ConcurrentCrawler(baseUrl, 5);
+  const finalPages = await siteCrawler.crawl();
+  return finalPages;
+}
+
+/*
+ export async function getHTML(url: string) {
+   console.log(url);
+   let res;
+   try {
+     res = await fetch(url, {
+       headers: { "User-agent": "TsCrawler/1.0" },
+     });
+   } catch (err) {
+     throw new Error(`Got Network error: ${(err as Error).message}`);
+   }
+
+   if (!res.ok) {
+     console.log(`Got HTTP error: ${res.status} ${res.statusText}`);
+     return "";
+   }
+   const contentType = res.headers.get("content-type");
+   if (!contentType || !contentType?.includes("text/html")) {
+     console.log(`Got non-HTML response: ${contentType}`);
+     return "";
+   }
+
+   return res.text();
+ }
+*/
+
+/*
 
 export async function crawlPage(
   baseUrl: string,
@@ -151,3 +158,5 @@ export async function crawlPage(
   }
   return pages;
 }
+
+*/
