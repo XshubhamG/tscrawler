@@ -1,5 +1,9 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ConcurrentCrawler } from "./crawler";
+import { writeJSONReport } from "./report";
 
 import {
   extractPageData,
@@ -76,6 +80,82 @@ describe("ConcurrentCrawler", () => {
       "crawler-test.com/page-b",
       "crawler-test.com/shared",
     ]);
+  });
+});
+
+describe("writeJSONReport", () => {
+  test("writes reports/<hostname>.json and overwrites the same site report on rerun", () => {
+    const originalCwd = process.cwd();
+    const tempDir = mkdtempSync(join(tmpdir(), "tscrawler-report-"));
+
+    process.chdir(tempDir);
+
+    try {
+      const reportPath = writeJSONReport(
+        {
+          b: {
+            url: "https://example.com/b",
+            heading: "B",
+            firstParagraph: "Second",
+            outgoingLinks: [],
+            imageUrls: [],
+          },
+          a: {
+            url: "https://example.com/a",
+            heading: "A",
+            firstParagraph: "First",
+            outgoingLinks: [],
+            imageUrls: [],
+          },
+        },
+        "https://example.com",
+      );
+
+      expect(reportPath).toBe(join(tempDir, "reports", "example.com.json"));
+      expect(existsSync(reportPath)).toBe(true);
+      expect(JSON.parse(readFileSync(reportPath, "utf-8"))).toEqual([
+        {
+          url: "https://example.com/a",
+          heading: "A",
+          firstParagraph: "First",
+          outgoingLinks: [],
+          imageUrls: [],
+        },
+        {
+          url: "https://example.com/b",
+          heading: "B",
+          firstParagraph: "Second",
+          outgoingLinks: [],
+          imageUrls: [],
+        },
+      ]);
+
+      writeJSONReport(
+        {
+          c: {
+            url: "https://example.com/c",
+            heading: "C",
+            firstParagraph: "Updated",
+            outgoingLinks: [],
+            imageUrls: [],
+          },
+        },
+        "https://example.com",
+      );
+
+      expect(JSON.parse(readFileSync(reportPath, "utf-8"))).toEqual([
+        {
+          url: "https://example.com/c",
+          heading: "C",
+          firstParagraph: "Updated",
+          outgoingLinks: [],
+          imageUrls: [],
+        },
+      ]);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

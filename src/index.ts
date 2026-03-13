@@ -1,17 +1,15 @@
 import { argv } from "node:process";
 import { crawlSiteAsync } from "./crawler";
+import { writeJSONReport } from "./report";
 
 async function main() {
   if (argv.length >= 3 && argv.length <= 5) {
-    const pages = await crawlSiteAsync(argv[2], +argv[3], +argv[4]);
+    const siteUrl = argv[2];
+    const pages = await crawlSiteAsync(siteUrl, +argv[3], +argv[4]);
     console.log(pages);
     console.log("Finished crawling.");
-    const firstPage = Object.values(pages)[0];
-    if (firstPage) {
-      console.log(
-        `First page record: ${firstPage["url"]} - ${firstPage["heading"]}`,
-      );
-    }
+    const reportPath = writeJSONReport(pages, siteUrl);
+    console.log(`Report written to ${reportPath}`);
   } else {
     console.error("Unknown number of aruguments");
     process.exit(1);
