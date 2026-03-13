@@ -1,27 +1,53 @@
 import { URL } from "node:url";
 import pLimit, { LimitFunction } from "p-limit";
-import { getURLsFromHTML, normalizeUrl } from "./utils";
+import { extractPageData, getURLsFromHTML, normalizeUrl } from "./utils";
+import { ExtractedPageData } from "./types";
+
+export {
+  extractPageData,
+  getFirstParagraphFromHTML,
+  getHeadingFromHTML,
+  getImagesFromHTML,
+  getURLsFromHTML,
+  normalizeUrl,
+} from "./utils";
 
 /*----------------------------------------------------- */
 /* --------- ConcurrentCrawler class ---------------- */
 /*----------------------------------------------------- */
 export class ConcurrentCrawler {
   private baseUrl: string;
-  private pages: Record<string, number>;
+  private pages: Record<string, ExtractedPageData>;
+  private seenUrls: Set<string>;
+  private maxPages: number;
+  private shouldStop: boolean;
   private limit: LimitFunction;
 
-  constructor(baseUrl: string, maxConcurrency: number = 5) {
+  constructor(
+    baseUrl: string,
+    maxConcurrency: number = 5,
+    maxPages: number = 50,
+  ) {
     this.baseUrl = baseUrl;
     this.pages = {};
+    this.seenUrls = new Set();
+    this.shouldStop = false;
+    this.maxPages = maxPages;
     this.limit = pLimit(maxConcurrency);
   }
 
   private addPageVisit(normalizedURL: string): boolean {
-    if (Object.hasOwn(this.pages, normalizedURL)) {
+    if (this.seenUrls.has(normalizedURL)) {
       return true;
     }
+    if (this.shouldStop) return true;
 
-    this.pages[normalizedURL] = 1;
+    if (this.seenUrls.size >= this.maxPages) {
+      this.shouldStop = true;
+      console.log("Reached maximum number of pages to crawl.");
+      return true;
+    }
+    this.seenUrls.add(normalizedURL);
     return false;
   }
 
@@ -51,6 +77,8 @@ export class ConcurrentCrawler {
   }
 
   private async crawlPage(currentURL: string): Promise<void> {
+    if (this.shouldStop) return;
+
     let current = new URL(currentURL);
     const base = new URL(this.baseUrl);
 
@@ -63,19 +91,16 @@ export class ConcurrentCrawler {
     let html = "";
     try {
       html = await this.getHTML(currentURL);
-      console.log(html);
     } catch (e) {
       console.log(`${(e as Error).message}`);
       return;
     }
-    const allUrls = getURLsFromHTML(html, this.baseUrl);
-    const input: Promise<void>[] = [];
+    const data = extractPageData(html, currentURL);
+    this.pages[normalizedURL] = data;
 
-    for (let nextUrl of allUrls) {
-      input.push(this.crawlPage(nextUrl));
-    }
-
-    await Promise.all(input);
+    await Promise.all(
+      data.outgoingLinks.map((nextUrl) => this.crawlPage(nextUrl)),
+    );
   }
 
   async crawl() {
@@ -88,8 +113,12 @@ export class ConcurrentCrawler {
 /* --------- Crawl Site Async Function ---------------- */
 /*----------------------------------------------------- */
 
-export async function crawlSiteAsync(baseUrl: string) {
-  const siteCrawler = new ConcurrentCrawler(baseUrl, 5);
+export async function crawlSiteAsync(
+  baseUrl: string,
+  maxConcurrency: number,
+  maxPages: number,
+) {
+  const siteCrawler = new ConcurrentCrawler(baseUrl, maxConcurrency, maxPages);
   const finalPages = await siteCrawler.crawl();
   return finalPages;
 }

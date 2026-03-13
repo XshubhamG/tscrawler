@@ -1,4 +1,6 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { ConcurrentCrawler } from "./crawler";
+
 import {
   extractPageData,
   getFirstParagraphFromHTML,
@@ -6,7 +8,7 @@ import {
   getImagesFromHTML,
   getURLsFromHTML,
   normalizeUrl,
-} from "./crawler";
+} from "./utils";
 
 describe("normalizeUrl", () => {
   test.each([
@@ -16,6 +18,64 @@ describe("normalizeUrl", () => {
     ["http://www.boot.dev/blog/path/", "www.boot.dev/blog/path"],
   ])("normalizes %s", (input, expected) => {
     expect(normalizeUrl(input)).toBe(expected);
+  });
+});
+
+describe("ConcurrentCrawler", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("fetches a shared child page only once when discovered concurrently", async () => {
+    const pagesByUrl: Record<string, string> = {
+      "https://crawler-test.com": `
+        <html><body>
+          <a href="/page-a">Page A</a>
+          <a href="/page-b">Page B</a>
+        </body></html>
+      `,
+      "https://crawler-test.com/page-a": `
+        <html><body>
+          <a href="/shared">Shared</a>
+        </body></html>
+      `,
+      "https://crawler-test.com/page-b": `
+        <html><body>
+          <a href="/shared">Shared</a>
+        </body></html>
+      `,
+      "https://crawler-test.com/shared": `
+        <html><body>
+          <h1>Shared Page</h1>
+        </body></html>
+      `,
+    };
+    const fetchCounts: Record<string, number> = {};
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.href : String(input);
+      fetchCounts[url] = (fetchCounts[url] ?? 0) + 1;
+
+      if (url === "https://crawler-test.com/shared") {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      return new Response(pagesByUrl[url], {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    });
+
+    const crawler = new ConcurrentCrawler("https://crawler-test.com", 4, 10);
+    const pages = await crawler.crawl();
+
+    expect(fetchCounts["https://crawler-test.com/shared"]).toBe(1);
+    expect(Object.keys(pages).sort()).toEqual([
+      "crawler-test.com",
+      "crawler-test.com/page-a",
+      "crawler-test.com/page-b",
+      "crawler-test.com/shared",
+    ]);
   });
 });
 
